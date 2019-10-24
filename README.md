@@ -1,11 +1,10 @@
-#-------------------------------------------------------#
-
-This code is tested only on the following environment.
-Python version = 3.7.3
-PyTorch version = 1.2.0
+---
+This code is only tested on following env.\
+\
+Python version = 3.7.3\
+PyTorch version = 1.2.0\
 CUDA version = 10.1
 
-#-------------------------------------------------------#
 
 
 
