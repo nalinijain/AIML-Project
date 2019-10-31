@@ -3,6 +3,11 @@ import time
 import torch
 import torch.nn as nn
 
+# Importing weights and biases to track model progress
+#login to Weights and Biases: wandb login add your login here, mine is: 2306b1dc7f3ba1719abdb949c179150d8f16cba5
+import wandb
+wandb.init(project="aiml-project")
+
 import numpy
 
 from torch_model import build_model
@@ -19,7 +24,6 @@ def train_one_epoch(model, data, target):
         if (_+1)%20 == 0:
             print("%d iteration has passed :: %0.2f sec" %(_+1, time.time()-t1))
             t1 = time.time()
-
         
 
 
@@ -38,4 +42,3 @@ def do_train():
 
 if __name__ == '__main__':
     do_train()
-    
