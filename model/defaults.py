@@ -2,7 +2,6 @@
 This file is to set default configuration of the model.
 TODO : Generate argparser or yaml file to change default value
 '''
-import wandb
 
 class cfg(object):
     VERSION = 1
@@ -14,23 +13,28 @@ class cfg(object):
     REF_CHANNEL = 32
 
     # Dataset define
+    USE_PKL = True
     DATASET = 'PanopticDome'
-    IMU_DIR = '../Dataset'
+    IMU_DIR = '../Dataset/IMU'
     KEYPOINTS_DIR = '../Dataset/keypoints'
     TENSOR_TYPE = "torchFloatTensor"
     DATA_DEVICE = "cuda:0"
 
     # Train config
-    LOAD_ALL = False
-    IMU_SET = [1]       # [1, 2]    
-    TRAIN_PART = ['head']
-    TRAIN_LABEL_PART = ['Rshank', 'Lshank'] 
+    IMU_SET = [1, 2]
+    TRAIN_PART = ['head', 'Lfoot', 'Rfoot']
+    TRAIN_LABEL_PART = ['Lfoot', 'Rfoot'] 
     TEST_PART = ['head']
-    DATA_DATE = ['190607']
+    DATA_DATE = ['190503', '190510', '190517', '190531', '190607']
     RANDOM_SAMPLING = True
-    wandb.config.DATA_DROP = 1000
-    wandb.config.SEQUENCE_LENGTH = 128
-    wandb.config.SAMPLING_FREQ = 125
-    wandb.config.NUM_EPOCH = 1000
-    wandb.config.LEARNING_RATE = 0.00125
-    wandb.config.BATCH_SIZE = 8
+    DATA_DROP = 1000
+    SEQUENCE_LENGTH = 125
+    SAMPLING_FREQ = 125
+    NUM_EPOCH = 1000
+    LEARNING_RATE = 0.00125
+    BATCH_SIZE = 8
+
+    OUTPUT_DIR = '../output'
+    LOG_DIR = '../output/log'
+    CHECKPOINT = 25000
+    PRETRAINED = False

@@ -4,17 +4,55 @@ from torch import nn
 from defaults import cfg
 from torch_layer import BottleNeck, BottleNeck_stride
 
-class ResNet(nn.Module):
-    def __init__(self):
-        super(ResNet, self).__init__()
-        
-        self.input_channel = len(cfg.TRAIN_PART)*6
+
+class LSTM(nn.Module):
+    def __init__(self, cfg):
+        super(LSTM, self).__init__()
         self.device = cfg.MODEL_DEVICE
+        self.num_layer = 3
+        self.input_size = 6
+        self.hidden_size = 32
+        self.layer = nn.LSTM(
+            self.input_size, self.hidden_size, num_layers=self.num_layer, bidirectional=True)
+        self.fc_layer = nn.Sequential(
+            nn.Linear(self.hidden_size*cfg.SEQUENCE_LENGTH*2, 128),
+            nn.BatchNorm1d(1), nn.ReLU(),
+            nn.Linear(128, 256),
+            nn.BatchNorm1d(1), nn.ReLU(),
+            nn.Linear(256, cfg.SEQUENCE_LENGTH*2*3),
+        )
+        self.to(self.device)
+
+    def forward(self, x):
+        x = x.transpose(2, 0)
+        # Set initial hidden and cell states 
+        h0 = torch.zeros(self.num_layer*2, 1, self.hidden_size).to(self.device)
+        c0 = torch.zeros(self.num_layer*2, 1, self.hidden_size).to(self.device)
+        
+        # Forward propagate LSTM
+        out, _ = self.layer(x, (h0, c0))  # out: tensor of shape (batch_size, seq_length, hidden_size)
+        
+        # Decode the hidden state of the last time step
+        out = out.reshape(1, 1, -1)
+        out = self.fc_layer(out)
+        out = out.reshape(-1, 2, cfg.SEQUENCE_LENGTH)
+        return out
+
+
+class ResNet(nn.Module):
+    def __init__(self, cfg):
+        super(ResNet, self).__init__()
+        self.cfg = cfg
+        
+        self.device = cfg.MODEL_DEVICE
+        
         self.act_fn = nn.ReLU()
         self.ref_channel = cfg.REF_CHANNEL
+        self.linear_input = 2736
+        self.linear_output = cfg.SEQUENCE_LENGTH * 6
         self.layer1 = nn.Sequential(
-            nn.Conv1d(self.input_channel, self.ref_channel, 3, 1, 1),
-            self.act_fn, nn.MaxPool1d(3, 1, 1),
+            nn.Conv1d(1, self.ref_channel, 3, 1),
+            self.act_fn, nn.MaxPool1d(3, 1),
         )
         self.layer2 = nn.Sequential(
             BottleNeck(self.ref_channel, self.ref_channel, self.ref_channel*4, self.act_fn),
@@ -23,28 +61,38 @@ class ResNet(nn.Module):
         )
         self.layer3 = nn.Sequential(
             BottleNeck(self.ref_channel*4, self.ref_channel*2, self.ref_channel*8, self.act_fn),
-            BottleNeck(self.ref_channel*8, self.ref_channel*2, self.ref_channel*8, self.act_fn),
-            BottleNeck(self.ref_channel*8, self.ref_channel*2, self.ref_channel*8, self.act_fn),
-            BottleNeck_stride(self.ref_channel*8, self.ref_channel*2, self.ref_channel*8, self.act_fn),
+            BottleNeck(self.ref_channel*8, self.ref_channel*2, self.ref_channel*16, self.act_fn),
+            BottleNeck(self.ref_channel*16, self.ref_channel*2, self.ref_channel*32, self.act_fn),
+            BottleNeck_stride(self.ref_channel*32, self.ref_channel*2, self.ref_channel*32, self.act_fn),
         )
         self.layer4 = nn.Sequential(
-            nn.Conv1d(self.ref_channel*8, self.ref_channel*8, 3, 1, 1),
-            nn.BatchNorm1d(self.ref_channel*8), self.act_fn,
-            nn.Conv1d(self.ref_channel*8, self.ref_channel*4, 3, 1, 1),
+            BottleNeck(self.ref_channel*32, self.ref_channel*16, self.ref_channel*32, self.act_fn),
+            BottleNeck(self.ref_channel*32, self.ref_channel*16, self.ref_channel*32, self.act_fn),
+            BottleNeck(self.ref_channel*32, self.ref_channel*16, self.ref_channel*32, self.act_fn),
+            BottleNeck(self.ref_channel*32, self.ref_channel*16, self.ref_channel*32, self.act_fn),
+            BottleNeck(self.ref_channel*32, self.ref_channel*16, self.ref_channel*32, self.act_fn),
+            BottleNeck(self.ref_channel*32, self.ref_channel*16, self.ref_channel*32, self.act_fn),
+        )
+        self.layer5 = nn.Sequential(
+            nn.Conv1d(self.ref_channel*32, self.ref_channel*16, 3, 1),
+            nn.BatchNorm1d(self.ref_channel*16), self.act_fn,
+            nn.Conv1d(self.ref_channel*16, self.ref_channel*4, 3, 1),
             nn.BatchNorm1d(self.ref_channel*4), self.act_fn,
-            nn.ConvTranspose1d(self.ref_channel*4, 6*len(cfg.TRAIN_LABEL_PART), 3, 2)
+            nn.Conv1d(self.ref_channel*4, self.ref_channel, 3, 1, 1),
+            nn.BatchNorm1d(self.ref_channel), self.act_fn,
+            nn.Conv1d(self.ref_channel, 8, 3, 1, 1),
+            nn.BatchNorm1d(8), self.act_fn,
+        )
+        
+        #TODO: Check the output size and build fully-connected layer to fit it.
+        self.fcn = nn.Sequential(
+            nn.Linear(self.linear_input, 128),
+            self.act_fn,
+            nn.Linear(128, 64),
+            self.act_fn,
+            nn.Linear(64, self.linear_output),
         )
 
-        '''
-        self.layer4 = nn.Sequential(
-            BottleNeck(self.ref_channel*8, self.ref_channel*4, self.ref_channel*16, self.act_fn),
-            BottleNeck(self.ref_channel*16, self.ref_channel*4, self.ref_channel*16, self.act_fn),
-            BottleNeck(self.ref_channel*16, self.ref_channel*4, self.ref_channel*16, self.act_fn),
-            BottleNeck(self.ref_channel*16, self.ref_channel*4, self.ref_channel*16, self.act_fn),
-            BottleNeck(self.ref_channel*16, self.ref_channel*4, self.ref_channel*16, self.act_fn),
-            BottleNeck(self.ref_channel*16, self.ref_channel*4, self.ref_channel*16, self.act_fn, stride=2),
-        )
-        '''
         self.to(self.device)
     
     def forward(self, x):
@@ -52,52 +100,57 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        x = x.view(3, -1, x.shape[-1])
+        x = self.layer5(x)
+        x = x.reshape(1, -1)
+        x = self.fcn(x)
+        x = x.reshape(3, -1, cfg.SEQUENCE_LENGTH)
         return x
 
 
 
-class gyroCNN(nn.Module):
-    def __init__(self):
-        super(gyroCNN, self).__init__()
+class Preprocess(nn.Module):
+    def __init__(self, cfg):
+        super(Preprocess, self).__init__()
+        self.cfg = cfg
         self.device = cfg.MODEL_DEVICE
-        self.input_channel = len(cfg.TRAIN_PART)
-        self.output_channel = 15
-        self.layer1 = nn.Sequential(                        # Input size = 3 * 6 * 256
-                nn.Conv1d(self.input_channel, 32, 3, 1, 1), # Output size = 3 * 32 * 256
-                nn.BatchNorm1d(32),
-                nn.ReLU(),
-                nn.MaxPool1d(2, 2))                         # Output size = 3 * 32 * 128
-        self.layer2 = nn.Sequential(
-                nn.Conv1d(32, 256, 3, 1, 1),                # Output size = 3 * 256 * 128
-                nn.BatchNorm1d(256),
-                nn.ReLU(),
-                nn.MaxPool1d(2,2))                          # Output size = 3 * 64 * 64
-        self.layer3 = nn.Sequential(
-                nn.ConvTranspose1d(256, 64, 3, 2),       # Output size = 3 * 64 * 128
-                nn.BatchNorm1d(64),
-                nn.ReLU())
-        self.layer4 = nn.Sequential(
-                nn.ConvTranspose1d(64, self.output_channel, 3, 2, 1),        # Output size = 3 * 15 * 256
-                nn.BatchNorm1d(self.output_channel),
-                nn.ReLU())
+        
+        self.imu_input = 1
+        self.imu_hidden = 16
+        self.imu_output = 1
+        
+        self.accel_prep = nn.Sequential(
+            nn.Conv1d(self.imu_input, self.imu_hidden, 3, 1, 1),
+            nn.BatchNorm1d(self.imu_hidden), nn.ReLU(),
+            nn.Conv1d(self.imu_hidden, self.imu_output, 3, 1, 1),
+            nn.BatchNorm1d(self.imu_output), nn.ReLU(),
+        )
+
+        self.gyro_prep = nn.Sequential(
+            nn.Conv1d(self.imu_input, self.imu_hidden, 3, 1, 1),
+            nn.BatchNorm1d(self.imu_hidden), nn.ReLU(),
+            nn.Conv1d(self.imu_hidden, self.imu_output, 3, 1, 1),
+            nn.BatchNorm1d(self.imu_output), nn.ReLU(),
+        )
+
         self.to(self.device)
 
-    def forward(self, x):
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-
-        return x
-
-
+    def forward(self, imu):
+        accel, gyro = imu
+        accel = self.accel_prep(accel)
+        gyro = self.gyro_prep(gyro)
+        imu = torch.cat((accel, gyro), dim=0)
+        
+        return imu
 
 
-def build_model():
-    if cfg.ARCHITECTURE == "CNN":
-        return gyroCNN()
+
+def build_preprocess(cfg):
+    return Preprocess(cfg)
+
+def build_model(cfg):
     if cfg.ARCHITECTURE == "ResNet":
-        return ResNet()
+        return ResNet(cfg)
+    elif cfg.ARCHITECTURE == "LSTM":
+        return LSTM(cfg)
     else:
         raise AssertionError("No such architecture exists")
