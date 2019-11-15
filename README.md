@@ -29,7 +29,7 @@ I coded based on pyTorch framework. The model class is at model/torch_model.py a
 # Run the code
 You can run the code by command 
 ```
-python ./model/main.py
+python ./model/trainer.py
 ```
 I encourage you to debug it using pdb to understand the code and feel free to change or remove the lines if necessary.
 
