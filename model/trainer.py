@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
 from NeuralNet import jointCNN
-from data import build_IMU_data
+from data import build_IMU_data, build_keypoint_data
 
 #sys.path.append('/home/soyongs/research/codes/AIML-Project/')
 from defaults import cfg
@@ -24,50 +24,55 @@ class Trainer():
         self.writer = SummaryWriter(log_dir=cfg.LOG_DIR, comment=cfg.ARCHITECTURE)
         
     def do_train(self):
-        for _ in range(self.num_epoch):
-            
-            if cfg.USE_PKL:
-                open_input = open('../Dataset/input.pkl', 'rb')
-                open_label = open('../Dataset/label.pkl', 'rb')
-                input_data = pickle.load(open_input)
-                label = pickle.load(open_label)
-                open_input.close()
-                open_label.close()
-            else:
-                IMU = build_IMU_data(cfg)
-                data = IMU.data
-                input_data = data[:,:,0,:].reshape(-1, 6, 1, cfg.SEQUENCE_LENGTH)
-                label = data[:,:,1:,:]
+        if cfg.USE_PKL:
+            with open(cfg.PKL_DIR + 'accel.pkl', 'rb') as accel_file:
+                accel = pickle.load(accel_file)    
+            with open(cfg.PKL_DIR + 'gyro.pkl', 'rb') as gyro_file:
+                gyro = pickle.load(gyro_file)
+            with open(cfg.PKL_DIR + 'label.pkl', 'rb') as label_file:
+                label = pickle.load(label_file)        
+            with open(cfg.PKL_DIR + 'kp.pkl', 'rb') as kp_file:
+                kp = pickle.load(kp_file)
 
-            self.train_one_epoch(input_data, label)
+        else:
+            IMU = build_IMU_data(cfg)
+            accel = IMU.accel
+            gyro = IMU.gyro
+            keypoint = build_keypoint_data(cfg)
+            kp = keypoint.input
+            label = keypoint.ground_truth
+
+            for i in range(len(accel)):
+                accel[i] = torch.transpose(accel[i].reshape(-1, cfg.SEQUENCE_LENGTH, 1, 3), 1, 3)
+                gyro[i] = torch.transpose(gyro[i].reshape(-1, cfg.SEQUENCE_LENGTH, 1, 3), 1, 3)
+                label[i] = label[i].reshape(-1, int(cfg.SEQUENCE_LENGTH/5), 1, 4)
+
+        for _ in range(self.num_epoch):
+            self.train_one_epoch([accel, gyro, kp], label)
             self.epoch += 1
 
     def train_one_epoch(self, inputs, label):
-        gyro = inputs[:, :3, :, :]
-        accel = inputs[:, 3:, :, :]
-        rand_perm = torch.randperm(gyro.shape[0])
-        accel = torch.tensor(accel[rand_perm]).cuda().float()
-        gyro = torch.tensor(gyro[rand_perm]).cuda().float()
-        label = torch.tensor(label[rand_perm]).cuda().float()
-
-        for j in range(0, accel.shape[0]-cfg.BATCH_SIZE, cfg.BATCH_SIZE):
-            loss = 0
-            print_loss = {}
-            for b in range(cfg.BATCH_SIZE):
-                losses = self.model([accel[j+b], gyro[j+b]], label[j+b])
-                for l in losses:
-                    loss += losses[l]
-                    try:
-                        print_loss[l] += losses[l]
-                    except:
-                        print_loss[l] = losses[l]
+        accel, gyro, kp = inputs
+        
+        for i in range(len(accel)):
+            for j in range(0, accel[i].shape[0]-cfg.BATCH_SIZE, cfg.BATCH_SIZE):
+                loss = 0
+                print_loss = {}
+                for b in range(cfg.BATCH_SIZE):
+                    losses = self.model([accel[i][j+b], gyro[i][j+b]], kp[i][j+b], label[i][j+b])
+                    for l in losses:
+                        loss += losses[l]
+                        try:
+                            print_loss[l] += losses[l]
+                        except:
+                            print_loss[l] = losses[l]
             
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-            print_loss['total_loss'] = loss
-            self.print_and_log(print_loss)
-            self.iteration += 1
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                print_loss['total_loss'] = loss
+                self.print_and_log(print_loss)
+                self.iteration += 1
 
 
     def save_model(self):

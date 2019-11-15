@@ -1,201 +1,246 @@
-"""
-This code is pipeline of loading and processing IMU data
-Developer : Soyong Shin
-"""
-
-import os, time
-
-from defaults import cfg
-
-import numpy as np
 import pandas as pd
+import numpy as np
 import torch
 import random
 
-class IMUData():
-    def __init__(self, is_train):
-        self.is_train = is_train
-        self.is_input = True
+import os, sys
+from data_utils import *
+
+class IMU():
+    def __init__(self, cfg):
+        self.cfg = cfg
         self.device = cfg.DATA_DEVICE
-
-        self.data_dir = cfg.IMU_DIR
-        self.date = cfg.DATA_DATE
-        self.subject = cfg.IMU_SET
+        self.is_random = cfg.RANDOM_SAMPLING
+        self.gyro, self.accel = self.load_data()
         
-        if self.is_train:
-            self.input_part = cfg.TRAIN_PART
-            self.label_part = cfg.TRAIN_LABEL_PART
-        else:
-            self.input_part = cfg.TEST_PART
-            self.label_part = cfg.TEST_PART
+        # TODO: Build test dataset loader that might be used in future research
 
-
-        self.data = self.load_data(True)
-        #self.label = self.load_data(False)
-        if cfg.TENSOR_TYPE == "torchFloatTensor":
-            self.data = torch.tensor(self.data).to(self.device)
-            self.data = self.data.float()
-            #self.label = torch.tensor(self.label).to(self.device)
-            #self.label = self.label.float()
+    def load_data(self):
         
-    
-    def load_data(self, is_input):
-        """
-        This Code is basic data loading code for ML training.
-        It works two times for every epochs in order to generate both input data and labels(targets / GT)
-        """
-
-        if is_input:
-            print("Start loading input data ... /\/\/\//\/\/\//\/\/\/")
-        else:
-            print("Start loading labels ... /\/\/\//\/\/\//\/\/\/")
-                    
-        num_features = 6
-        if is_input:
-            self.is_input = True
-            part = self.input_part
-        else:
-            self.is_input = False
-            part = self.label_part
-
-        data = dict()
-
-        for s in self.subject:
+        print("Start loading IMU data.")
+        gyro_data = []
+        accel_data = []
+        _, subs, _ = next(os.walk(self.cfg.IMU_DIR))
+        
+        for id in range(2):
+            subject_folder = os.path.join(self.cfg.IMU_DIR, subs[id])
             
-            print("Loading annotation file for Set%d" %s)
-            
-            _, sets, _ = next(os.walk(self.data_dir))
-            subject_dir = os.path.join(self.data_dir, sets[s-1])
-            anno_start, anno_end = self.load_annotation(subject_dir)
-            for d in self.date:
-                date_dir = os.path.join(subject_dir, d)
-                for p in part:
-                    
-                    print("Loading data | date : %s (YYMMDD), part : %s" %(d, p))
-                    accum_length = []
-                    part_dir = os.path.join(date_dir, p)
-                    gyro = pd.read_csv(part_dir+'/gyro.csv', index_col = 'Timestamp (microseconds)')
-                    accel = pd.read_csv(part_dir+'/accel.csv', index_col = 'Timestamp (microseconds)')
-                    time_start, time_end = self.segment_annotation(gyro, anno_start, anno_end)
-                    for t in range(len(time_start)):
-                        seg_data = self.segment_data(accel, gyro, time_start[t], time_end[t])
-                        re_data = self.resample_data(seg_data)
-                        accum_length.append(re_data.shape[0])
-                        try:
-                            data[p] = data[p].append(re_data)
-                        except:
-                            data[p] = re_data
-                    accum_length = np.array(accum_length).reshape(1,-1)
-                    try:
-                        length = np.vstack([length, accum_length])
-                    except:
-                        length = accum_length
-                    
-                    new_index = pd.RangeIndex(start = 1, stop = data[p].shape[0] + 1, step = 1)
-                    data[p].index = new_index
+            for d in self.cfg.DATA_DATE:    
+                print("============ IMU data loading | date : %s, subject : %d ============" %(d, id+1))
+                gyro_exp_data = []
+                accel_exp_data = []
                 
-                print("Size syncing... | date : %s (YYMMDD)" %d)
+                for part in self.cfg.TRAIN_PART:
+                    date_folder = os.path.join(subject_folder, d)
+                    part_folder = os.path.join(date_folder, part)
+                    _, _, files = next(os.walk(part_folder))
+                    
+                    assert len(files)%2 == 0
+                    num_exp = 14        # Maximum experiment number
+                    
+                    actual_num_exp = -1
 
-                data = self.size_syncing_data(length, data)
+                    for i in range(num_exp):
+                        accel_name = 'accel_exp' + str(i+1) + '.csv'
+                        gyro_name = 'gyro_exp' + str(i+1) + '.csv'
+                        try:
+                            accel = pd.read_csv(
+                                os.path.join(part_folder, accel_name), 
+                                index_col='Timestamp (microseconds)')
+                            gyro = pd.read_csv(
+                                os.path.join(part_folder, gyro_name), 
+                                index_col='Timestamp (microseconds)')
+                            
+                            actual_num_exp += 1
+                        
+                        except:
+                            continue
 
-        for p in part:
-            try:
-                tensor = np.vstack([tensor, np.array(data[p].T).reshape(1,num_features,-1)])
-            except:
-                tensor = np.array(data[p].T).reshape(1,num_features,-1)
-        tensor = (tensor).reshape(len(part), num_features, cfg.SEQUENCE_LENGTH, -1)
+                        gyro = self.drop_out(gyro)
+                        gyro = self.rename_columns(gyro, part)
+                        accel = self.drop_out(accel)
+                        accel = self.rename_columns(accel, part)
+                        
+                        try:
+                            gyro_exp_data[actual_num_exp] = gyro_exp_data[actual_num_exp].join(gyro, how='outer')
+                        except:
+                            gyro_exp_data.append(gyro)
+                        try:
+                            accel_exp_data[actual_num_exp] = accel_exp_data[actual_num_exp].join(accel, how='outer')
+                        except:
+                            accel_exp_data.append(accel)
+                
+                    if part == self.cfg.TRAIN_PART[0]:
+                        print("%d experiments loaded" %(actual_num_exp+1))
 
-        return np.transpose(tensor, (3,1,0,2))
+                gyro_data += self.reshape_data(gyro_exp_data)
+                accel_data += self.reshape_data(accel_exp_data)
+        
+        return gyro_data, accel_data
 
-
-    
-    def segment_annotation(self, data, start, end):
+    def reshape_data(self, data_sequence):
         """
-        This function is to segment annotation activity by the date of experiment.
+        This functions is to reshape and convert pandas DataFrame to torch tensor
+        Data shape will be (-1, N, C, L) while: 
+        -1 varies with the size of IMU sensor data per experiment,
+        N is 3 X num_of_parts,
+        C is num_of_channel which is 1,
+        L is length_of_sequence which is defined in configuration file.
         """
         
-        i_start = np.where(np.array(start > data.index[0]/1000)==True)[0][0]
-        i_end = np.where(np.array(end < data.index[-1]/1000)==True)[0][-1]
-        t_start = np.array(start)[i_start:i_end+1]
-        t_end = np.array(end)[i_start:i_end+1]
+        for i in range(len(data_sequence)):
+            rs = np.array(data_sequence[i])
+            
+            '''
+            Random dropout needs reshape in the future.
 
-        return t_start, t_end
+            rs = rs.reshape(-1, self.cfg.SEQUENCE_LENGTH, rs.shape[1])
+            rs = np.transpose(rs, (0, 2, 1))
+            rs = rs.reshape(rs.shape[0], rs.shape[1], 1, -1)
+            '''
 
-    def segment_data(self, accel, gyro, start, end):
+            rs = torch.tensor(rs)
+            if self.device == 'cuda:0':
+                rs = rs.to(self.device).float()
+            data_sequence[i] = rs
+                
+
+        return data_sequence
+
+    def rename_columns(self, data, part):
         """
-        This function is to segment accel & gyro data by activity annotation.
+        This function is to change the column names of data.
+        This avoids name overlap and enalbes data to be joined.
         """
-        
-        i_start = np.where(gyro.index > 1000*start)[0][0]
-        i_end = np.where(gyro.index < 1000*end)[0][-1]
-        seg_gyro = gyro.loc[gyro.index[i_start : i_end], gyro.columns]
-        seg_accel = accel.loc[accel.index[i_start : i_end], accel.columns]
-        seg_data = seg_gyro.join(seg_accel, how='outer')
 
-        return seg_data
+        new_columns = []
+        new_columns.append('X_' + part)
+        new_columns.append('Y_' + part)
+        new_columns.append('Z_' + part)
 
-
-    def resample_data(self, data):
-        """
-        This function is to resample data with given frequency.
-        """
-        
-        re_freq = int((10**6)/cfg.SAMPLING_FREQ)
-        data = data.loc[data.index[cfg.DATA_DROP: -cfg.DATA_DROP], data.columns]
-        data.index = data.index - data.index[0]
-
-        overlap_index = data.index[data.index % re_freq == 0]
-        new_index = [re_freq * i for i in range(int(data.index[-1]/re_freq)+1)]
-        for i in range(len(overlap_index)):
-            new_index.remove(overlap_index[i])
-        new_index = pd.Index(new_index)
-        new_index.name = data.index.name
-        new_data = pd.DataFrame(index=new_index, columns=data.columns)
-        
-        data = data.append(new_data).sort_index(axis=0)
-        data = data.interpolate(limit_area='inside')
-        
-        re_index = data.index % re_freq == 0
-        data = data.loc[data.index[re_index], data.columns]
-        if data.shape[0]%cfg.SEQUENCE_LENGTH > 0:
-            data = data.loc[data.index[:-(data.shape[0]%cfg.SEQUENCE_LENGTH)], data.columns]
+        new_columns = pd.Index(new_columns)
+        data.columns = new_columns
 
         return data
 
-
-    def size_syncing_data(self, length, data):
+    def drop_out(self, data):
         """
-        This function is to sync each parts to have same size.
-        """
+        This function is to drop front and back data.
+        """        
         
-        if self.is_input:
-            part = self.input_part
+        #Drop from the back to discard invalid data
+        dropped_index = data.index[:(-1)*self.cfg.DATA_DROP]
+        data = data.reindex(dropped_index)
+        
+        #Drop from the front to generate different sequence combination
+        if self.is_random:
+            rand = int(random.random() * 10000) % (self.cfg.SEQUENCE_LENGTH/5) * 5
+            random_drop_index = data.index[rand:]
+            data = data.reindex(random_drop_index)
+
+        #Drop from the back to the size of data is multiple of sequence length
+        rem = data.shape[0] % self.cfg.SEQUENCE_LENGTH
+        if rem != 0:
+            drop_remain_index = data.index[:(-1)*rem]
+            return data.reindex(drop_remain_index)
+
         else:
-            part = self.label_part
+            return data        
+        
 
-        reduce_length = length - np.array([length[:, i].min() for i in range(length.shape[1])])
-        for p in part:
-            for seq in range(reduce_length.shape[1]):
-                index = part.index(p)
-                accum = length[index][:seq+1].sum()
-                if reduce_length[index][seq] != 0:
-                    data[p] = data[p].drop(
-                        data[p].index[accum - reduce_length[index][seq]:accum])
-                    length[index][seq] = length[index][seq] - reduce_length[index][seq]
-        return data
+class keypoint():
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.device = cfg.DATA_DEVICE
+        self.training_data = []
+        self.input, self.ground_truth = self.load_data()
+
+    def load_data(self):
+        print("Start loading keypoint data.")
+        subject_1, subject_2 = [[], []]
+
+        for d in self.cfg.DATA_DATE:
+            date_folder = os.path.join(self.cfg.KEYPOINTS_DIR, d)
+            _, exps, _ = next(os.walk(date_folder))
+            exps.sort()
+            num_exp = len(exps)
+            for i in range(num_exp):
+                exp_folder = os.path.join(date_folder, exps[i])
+                
+                print("============ Keypoint data loading | date : %s, exp : %d ============" %(d, i+1))
+                joints, _ = kp_loader(exp_folder)
+                
+                if len(joints) == 0:
+                    continue
+                
+                joints = self.zero_conf(joints)
+                for id in range(2):
+                    joints[id] = joints[id][:,self.cfg.KEYPOINT_PART,:]
+                    joints[id] = self.drop_out(joints[id])
+                    #joints[id].reshape(-1, int(self.cfg.SEQUENCE_LENGTH/5), 4)
+                    joints[id].reshape(-1, 4)
+                joints[0] = torch.tensor(joints[0])
+                joints[1] = torch.tensor(joints[1])
+                if self.device == 'cuda:0':
+                    joints[0] = joints[0].to(self.device).float()
+                    joints[1] = joints[1].to(self.device).float()
+                
+                check_unsynced_0 = d + '_' + str(i+1) + '_1'
+                check_unsynced_1 = d + '_' + str(i+1) + '_2'
+                if self.cfg.UNSYNCED_LIST.count(check_unsynced_0) == 0:
+                    subject_1.append(joints[0])
+                if self.cfg.UNSYNCED_LIST.count(check_unsynced_1) == 0:
+                    subject_2.append(joints[1])
+        
+        self.training_data = subject_1 + subject_2
+        input_data, output_data = self.separate_input_output(self.training_data)
+        return input_data, output_data
+
+    def zero_conf(self, joints):
+        for i in range(len(joints)):
+            conf = joints[i][:, :, -1]
+            conf = np.where(conf == -1, 0, conf)
+            joints[i][:, :, -1] = conf
+        
+        return joints
+
+    def separate_input_output(self, data):
+        """
+        This function is to classify keypoint data 
+        that goes as input and ground truth to compare with output.
+        """
+        
+        input_data, output_data = [[], []]
+        interval = int(self.cfg.SEQUENCE_LENGTH/5)
+        for i in range(len(data)):
+            input_idx = [j*interval for j in range(int(data[i].shape[0]/interval)) if j*interval < data[i].shape[0]]
+            #input_data.append(data[i][input_idx][:, :, :-1])   confidence value is necessary
+            input_data.append(data[i][input_idx])
+
+            tmp_output = data[i][1:]
+            if tmp_output.shape[0]%interval != 0:
+                tmp_output = tmp_output[:-(tmp_output.shape[0]%interval)]
+            
+            #tmp_output = tmp_output.reshape(-1, interval, tmp_output.shape[1], tmp_output.shape[2])
+            output_data.append(tmp_output)
+
+        return input_data, output_data
+
+    def drop_out(self, data):
+        """
+        This function is to drop back data.
+        """
+
+        rem = data.shape[0] % int(self.cfg.SEQUENCE_LENGTH/5)
+        if rem != 0:
+            return data[:(-1)*rem]
+        else:
+            return data
 
 
 
-    def load_annotation(self, anno_dir):
-        _, _, files = next(os.walk(anno_dir))
-        anno_dir = os.path.join(anno_dir, files[0])
-        annotation = pd.read_csv(anno_dir, index_col='AnnotationId')
-        start = annotation['Start Timestamp (ms)']['Activity:Data Collection']
-        end = annotation['Stop Timestamp (ms)']['Activity:Data Collection']
+def build_IMU_data(cfg):
+    return IMU(cfg)
 
-        return start, end
-
-
-def build_IMU_data(is_train):
-    
-    return IMUData(is_train)
+def build_keypoint_data(cfg):
+    return keypoint(cfg)

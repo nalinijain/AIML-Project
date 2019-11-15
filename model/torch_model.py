@@ -48,8 +48,8 @@ class ResNet(nn.Module):
         
         self.act_fn = nn.ReLU()
         self.ref_channel = cfg.REF_CHANNEL
-        self.linear_input = 2736
-        self.linear_output = cfg.SEQUENCE_LENGTH * 6
+        self.linear_input = 336
+        self.linear_output = 15
         self.layer1 = nn.Sequential(
             nn.Conv1d(1, self.ref_channel, 3, 1),
             self.act_fn, nn.MaxPool1d(3, 1),
@@ -90,7 +90,7 @@ class ResNet(nn.Module):
             self.act_fn,
             nn.Linear(128, 64),
             self.act_fn,
-            nn.Linear(64, self.linear_output),
+            nn.Linear(64, self.linear_output)
         )
 
         self.to(self.device)
@@ -103,7 +103,7 @@ class ResNet(nn.Module):
         x = self.layer5(x)
         x = x.reshape(1, -1)
         x = self.fcn(x)
-        x = x.reshape(3, -1, cfg.SEQUENCE_LENGTH)
+        x = x.reshape(5, 1, 3)
         return x
 
 
@@ -117,6 +117,9 @@ class Preprocess(nn.Module):
         self.imu_input = 1
         self.imu_hidden = 16
         self.imu_output = 1
+
+        self.input_feature = len(cfg.KEYPOINT_PART)*3
+        self.output_feature = len(cfg.TRAIN_PART)*6
         
         self.accel_prep = nn.Sequential(
             nn.Conv1d(self.imu_input, self.imu_hidden, 3, 1, 1),
@@ -131,16 +134,26 @@ class Preprocess(nn.Module):
             nn.Conv1d(self.imu_hidden, self.imu_output, 3, 1, 1),
             nn.BatchNorm1d(self.imu_output), nn.ReLU(),
         )
-
+        self.kp_prep = nn.Sequential(
+            nn.Linear(self.input_feature, 128),
+            nn.BatchNorm1d(1), nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(1), nn.ReLU(),
+            nn.Linear(64, self.output_feature)
+        )
         self.to(self.device)
 
-    def forward(self, imu):
+    def forward(self, imu, kp):
         accel, gyro = imu
         accel = self.accel_prep(accel)
         gyro = self.gyro_prep(gyro)
         imu = torch.cat((accel, gyro), dim=0)
         
-        return imu
+        kp = kp.reshape(1, 1, -1)
+        kp = self.kp_prep(kp)
+        kp = kp.reshape(-1, 1, 1)
+
+        return imu, kp
 
 
 
