@@ -17,7 +17,7 @@ class cfg(object):
     DATASET = 'PanopticDome'
     IMU_DIR = '../Dataset/synced_IMU'
     KEYPOINTS_DIR = '../Dataset/keypoints'
-    PKL_DIR = '../Dataset/PKL/head/'
+    PKL_DIR = '../Dataset/PKL/'
     TENSOR_TYPE = "torchFloatTensor"
     DATA_DEVICE = "cuda:0"
 
