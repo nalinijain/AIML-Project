@@ -53,7 +53,7 @@ def open_json_file(file_name):
     return id, joints
 
 
-def kp_loader(path):
+def refined_kp_loader(path):
     _, _, f = next(os.walk(path))
     number_of_files = len(f)
     

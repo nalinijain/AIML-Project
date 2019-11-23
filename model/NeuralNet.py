@@ -19,12 +19,22 @@ class jointCNN(nn.Module):
         self.loss = build_loss_function(cfg)
         self.to(self.device)
 
-    def forward(self, imu_data, kp_data, target):
+    def forward(self, imu_data, init_pose, target):
         losses = {}
-        imu, kp = self.prep(imu_data, kp_data[:,:-1])
+        
+        if init_pose.shape[-1] == 4:
+            try:
+                init_conf = init_pose[:,:,:,-1]
+            except:
+                import pdb; pdb.set_trace()
+            init_conf = init_conf.prod(dim=1)
+            init_pose = init_pose[:,:,:,:-1]
+        
+
+        imu, kp = self.prep(imu_data, init_pose)
         input = torch.cat((kp, imu), dim=2)
         output = self.model(input)
-        l2_loss = self.loss.L2_loss(output, target)
+        l2_loss = self.loss.l2_loss(output, target, init_conf=init_conf)
         losses['l2_loss'] = l2_loss
         
         return losses

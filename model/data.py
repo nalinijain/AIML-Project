@@ -1,10 +1,11 @@
 import pandas as pd
 import numpy as np
 import torch
-import random
+import random, pickle
 
 import os, sys
-from data_utils import *
+sys.path.append('/home/soyongs/research/codes/joint-CNN/')
+from utils.data_utils import *
 
 class IMU():
     def __init__(self, cfg):
@@ -36,11 +37,16 @@ class IMU():
                     _, _, files = next(os.walk(part_folder))
                     
                     assert len(files)%2 == 0
+                    #num_exp = int(len(files)/2)
                     num_exp = 14        # Maximum experiment number
                     
                     actual_num_exp = -1
 
                     for i in range(num_exp):
+                        check_unsynced = d + '_' +str(i+1) + '_' + str(id+1)
+                        if self.cfg.UNSYNCED_LIST.count(check_unsynced):
+                            continue
+
                         accel_name = 'accel_exp' + str(i+1) + '.csv'
                         gyro_name = 'gyro_exp' + str(i+1) + '.csv'
                         try:
@@ -138,14 +144,19 @@ class IMU():
             random_drop_index = data.index[rand:]
             data = data.reindex(random_drop_index)
 
+        return data        
+        
         #Drop from the back to the size of data is multiple of sequence length
+        '''
         rem = data.shape[0] % self.cfg.SEQUENCE_LENGTH
         if rem != 0:
             drop_remain_index = data.index[:(-1)*rem]
             return data.reindex(drop_remain_index)
+        
 
         else:
             return data        
+        '''
         
 
 class keypoint():
@@ -153,7 +164,8 @@ class keypoint():
         self.cfg = cfg
         self.device = cfg.DATA_DEVICE
         self.training_data = []
-        self.input, self.ground_truth = self.load_data()
+        #self.input, self.ground_truth = self.load_data()
+        self.ground_truth = self.load_data()
 
     def load_data(self):
         print("Start loading keypoint data.")
@@ -166,9 +178,10 @@ class keypoint():
             num_exp = len(exps)
             for i in range(num_exp):
                 exp_folder = os.path.join(date_folder, exps[i])
+                #exp_folder += self.cfg.KEYPOINTS_DEFAULT
+                #joints, _ = kp_loader(exp_folder)
                 
-                print("============ Keypoint data loading | date : %s, exp : %d ============" %(d, i+1))
-                joints, _ = kp_loader(exp_folder)
+                joints, _ = refined_kp_loader(exp_folder)
                 
                 if len(joints) == 0:
                     continue
@@ -176,8 +189,7 @@ class keypoint():
                 joints = self.zero_conf(joints)
                 for id in range(2):
                     joints[id] = joints[id][:,self.cfg.KEYPOINT_PART,:]
-                    joints[id] = self.drop_out(joints[id])
-                    #joints[id].reshape(-1, int(self.cfg.SEQUENCE_LENGTH/5), 4)
+                    #joints[id] = self.drop_out(joints[id])
                     joints[id].reshape(-1, 4)
                 joints[0] = torch.tensor(joints[0])
                 joints[1] = torch.tensor(joints[1])
@@ -187,14 +199,26 @@ class keypoint():
                 
                 check_unsynced_0 = d + '_' + str(i+1) + '_1'
                 check_unsynced_1 = d + '_' + str(i+1) + '_2'
+                subject_message = ''
                 if self.cfg.UNSYNCED_LIST.count(check_unsynced_0) == 0:
                     subject_1.append(joints[0])
+                    subject_message += '1'
                 if self.cfg.UNSYNCED_LIST.count(check_unsynced_1) == 0:
                     subject_2.append(joints[1])
+                    if subject_message == '1':
+                        subject_message += ', 2'
+                    else:
+                        subject_message = '2'
+                
+                print("Completed loading keypoint data | date : %s, exp : %d, subject : %s" 
+                %(d, i+1, subject_message))
         
         self.training_data = subject_1 + subject_2
-        input_data, output_data = self.separate_input_output(self.training_data)
-        return input_data, output_data
+        #input_data, output_data = self.separate_input_output(self.training_data)
+        output_data = self.separate_input_output(self.training_data)
+
+        return output_data
+        #return input_data, output_data
 
     def zero_conf(self, joints):
         for i in range(len(joints)):
@@ -210,21 +234,16 @@ class keypoint():
         that goes as input and ground truth to compare with output.
         """
         
-        input_data, output_data = [[], []]
+        output_data = []
         interval = int(self.cfg.SEQUENCE_LENGTH/5)
         for i in range(len(data)):
-            input_idx = [j*interval for j in range(int(data[i].shape[0]/interval)) if j*interval < data[i].shape[0]]
-            #input_data.append(data[i][input_idx][:, :, :-1])   confidence value is necessary
-            input_data.append(data[i][input_idx])
-
-            tmp_output = data[i][1:]
+            tmp_output = data[i]
             if tmp_output.shape[0]%interval != 0:
                 tmp_output = tmp_output[:-(tmp_output.shape[0]%interval)]
             
-            #tmp_output = tmp_output.reshape(-1, interval, tmp_output.shape[1], tmp_output.shape[2])
             output_data.append(tmp_output)
 
-        return input_data, output_data
+        return output_data
 
     def drop_out(self, data):
         """
@@ -237,6 +256,129 @@ class keypoint():
         else:
             return data
 
+def data_augmentation(cfg, init_pose, label):
+    rand = torch.normal(0, 100, size=(init_pose.shape[0], 1, 3)).cuda().float()
+    init_pose[:, :, :-1] = init_pose[:, :, :-1] + rand
+    label[:, :, :, :-1] = label[:, :, :, :-1] + rand.reshape(-1, 1, 1, 3)
+
+    return init_pose, label
+
+def make_mini_batch(cfg, data):
+    # Size synthesizing
+    for i in range(len(data)):
+        data[i] = torch.cat(data[i], dim=0)
+    
+    if cfg.DATA_AUGMENTATION:
+        data[2], data[3] = data_augmentation(cfg, data[2], data[3])
+
+    assert (data[0].shape[0] == data[1].shape[0] and
+        data[1].shape[0] == data[2].shape[0] and 
+        data[2].shape[0] == data[3].shape[0])
+
+    # Random permuting
+    rand = torch.randperm(data[0].shape[0])
+    for i in range(len(data)):
+        data[i] = data[i][rand]
+    
+    # Batch generating
+    rem = data[0].shape[0] % cfg.BATCH_SIZE
+    if rem != 0:
+        for i in range(len(data)):
+            data[i] = data[i][:(-1)*rem]
+            try:
+                data[i] = data[i].reshape(-1, cfg.BATCH_SIZE, data[i].shape[1], data[i].shape[2], data[i].shape[3])
+            except:
+                data[i] = data[i].reshape(-1, cfg.BATCH_SIZE, data[i].shape[1], data[i].shape[2])
+
+    return data
+
+
+def generate_init_pose(cfg, label):
+    init_pose_idx = []
+    interval = int(cfg.SEQUENCE_LENGTH/5)
+    for i in range(cfg.NUM_INIT_POSES):
+        tmp_idx = [j * interval + i for j in range(int(label.shape[0]/interval)) if j*interval < label.shape[0]]
+        init_pose_idx += tmp_idx
+    
+    init_pose_idx.sort()
+    init_pose = label[init_pose_idx].reshape(-1, cfg.NUM_INIT_POSES, len(cfg.KEYPOINT_PART), 4)
+    
+    return init_pose
+
+
+def data_preprocess(cfg, accel, gyro, label):
+    print("Data for new epoch loaded. Preprocessing .... ")
+    
+    init_pose = []
+    for i in range(len(accel)):
+        kp_drop = int(random.random()*10000 % int(cfg.SEQUENCE_LENGTH/5))
+        label[i] = label[i][kp_drop:]
+
+        imu_drop = 5 * kp_drop + 5 * cfg.NUM_INIT_POSES
+        accel[i] = accel[i][imu_drop:]
+        gyro[i] = gyro[i][imu_drop:]
+
+        imu_rem = accel[i].shape[0] % cfg.SEQUENCE_LENGTH
+        if imu_rem != 0:
+            accel[i] = accel[i][:(-1)*imu_rem]
+            gyro[i] = gyro[i][:(-1)*imu_rem]
+        
+        init_pose.append(generate_init_pose(cfg, label[i]))
+        label[i] = label[i][cfg.NUM_INIT_POSES:]
+
+        kp_rem = label[i].shape[0] % int(cfg.SEQUENCE_LENGTH/5)
+        if kp_rem != 0:
+            label[i] = label[i][:(-1)*kp_rem]
+
+        accel[i] = torch.transpose(accel[i].reshape(-1, cfg.SEQUENCE_LENGTH, 3*len(cfg.TRAIN_PART)), 1, 2)
+        gyro[i] = torch.transpose(gyro[i].reshape(-1, cfg.SEQUENCE_LENGTH, 3*len(cfg.TRAIN_PART)), 1, 2)
+        label[i] = label[i].reshape(-1, int(cfg.SEQUENCE_LENGTH/5), len(cfg.KEYPOINT_PART), 4)
+
+        init_pose[i] = init_pose[i][:accel[i].shape[0]]
+        label[i] = label[i][:accel[i].shape[0]]
+    
+    [accel, gyro, init_pose, label] = make_mini_batch(cfg, [accel, gyro, init_pose, label])
+    
+    return accel, gyro, init_pose, label
+
+def to_cpu(data):
+    for d in data:
+        for i in range(len(data[0])):
+            d[i] = d[i].cpu()
+
+    return data
+
+def load_data(cfg):
+    if cfg.USE_PKL:
+        with open(cfg.PKL_DIR + 'accel.pkl', 'rb') as accel_file:
+            accel = pickle.load(accel_file)
+        with open(cfg.PKL_DIR + 'gyro.pkl', 'rb') as gyro_file:
+            gyro = pickle.load(gyro_file)
+        with open(cfg.PKL_DIR + 'label.pkl', 'rb') as label_file:
+            label = pickle.load(label_file)
+                
+    else:
+        keypoint = build_keypoint_data(cfg)
+        label = keypoint.ground_truth
+        IMU = build_IMU_data(cfg)
+        accel = IMU.accel
+        gyro = IMU.gyro
+        
+        accel_open = open("accel.pkl", "wb")
+        gyro_open = open("gyro.pkl", "wb")
+        label_open = open("label.pkl", "wb")
+        pickle.dump(accel, accel_open)
+        pickle.dump(gyro, gyro_open)
+        pickle.dump(label, label_open)
+        import pdb; pdb.set_trace()
+
+        
+
+    accel, gyro, init_pose, label = data_preprocess(cfg, accel, gyro, label)
+    return accel, gyro, init_pose, label
+
+def prepare_evalset(cfg):
+    pass
 
 
 def build_IMU_data(cfg):
