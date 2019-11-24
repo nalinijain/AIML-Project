@@ -9,7 +9,7 @@ CUDA version = 10.1
 
 
 # Data Structure
-Current code expect that data is located at Dataset/"Subject id (ex:Set01)"/"Date (YYMMDD)"/"Part (ex: head, Lshank)"/*.csv
+Directory of loading PKL file is defined at defualts.py. Download PKL file from google drive and make sure to match the directory of PKL file with PKL_DIR in defaults.py.
 
 
 
@@ -29,7 +29,7 @@ I coded based on pyTorch framework. The model class is at model/torch_model.py a
 # Run the code
 You can run the code by command 
 ```
-python ./model/trainer.py
+cd model/ && python trainer.py
 ```
 I encourage you to debug it using pdb to understand the code and feel free to change or remove the lines if necessary.
 
@@ -37,7 +37,5 @@ I encourage you to debug it using pdb to understand the code and feel free to ch
 
 
 # TODO:
-1) build loss function
-2) build evaluator (test the model)
-3) build save and load the model
-4) ...etc
+1) build evaluator (test the model)
+2) ...etc
